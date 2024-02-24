@@ -1,0 +1,620 @@
+---
+title: "Customer churn prediction"
+author: "Michele Puglia"
+date: "2024-02-24"
+output: 
+  pdf_document:
+    toc: yes
+  html_document:
+    theme: journal
+    toc: yes
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Libraries
+library(ggplot2)
+library(dplyr)
+library(corrplot)
+library(gridExtra)
+library(caret)
+library(car)
+library(ROCR)
+library(pROC)
+library(ggeffects)
+library(MASS)
+```
+
+# Introduzione
+
+Questo report si propone di illustrare la costruzione e applicazione di modelli lineari generalizzati (GLM) attraverso un esempio pratico. I GLM rappresentano un'estensione della classica regressione lineare, adattandosi a situazioni in cui la distribuzione della variabile risposta non segue la normale (ad esempio alla famiglia ED) e consentendo l'analisi di relazioni più complesse tra le variabili rispetto al caso lineare.
+Il progetto analizza la problematica relativa alla perdita di clienti da parte di un istituto bancario. Per farlo, si  utilizza la regressione logistica al fine di modellare la probabilità che un individuo abbandoni o rimanga cliente della banca (binaria: 0,1)
+
+
+# Logistic regression
+
+Si tratta di un modello di regressione utile a modellare la probabilità di successo di una variabile di risposta binaria in funzione di variabili predittive. L'obiettivo principale è predire con precisione la probabilità con cui un'osservazione appartiene a una delle due classi..  Tale modello prevede che si possa scegliere la link function tra 3 alternative: logit, probit e clog-log. Tale scelta è cruciale per delineare la forma più adatta di relazione tra le variabili indipendenti e la probabilità di appartenenza alle classi, in base ai dati a disposizione.
+
+## Dataset bank
+
+I dati sono stati acquisti acquisiti da Kaggle, una piattaforma online per il data science (https://www.kaggle.com/datasets/gauravtopre/bank-customer-churn-dataset). In particolare, il dataset fa riferimento a dati di clienti dell'istituto ABC Multistate Bank, analizzando i casi di abbandono ovvero l'interruzione dell'utilizzo dei servizi offerti dalla banca e la chiusura dei propri conti. Un cliente che abbandona è una perdita per l'azienda sia in termini finanziari che reputazionali,per questo motivo è importante affrontare in modo proattivo i potenziali rischi di abbandono, sviluppando strategie di fidelizzazione mirate e migliorando la soddisfazione dei clienti. L'obiettivo principaleè comprendere e prevedere i fattori che influenzano l'abbandono dei clienti attraverso la costruzione di un modello adatto al contesto.
+
+I dati a disposizione (10.000 osservazioni) considerano il comportamento dei clienti in relazione ad alcuni fattori che potrebbero influenzare la decisione di abbandono (churn). In particolare, si fa riferimento a 12 variabili specifiche, tra cui: 
+
+- **Credit Score**: Punteggio assegnato ad ogni cliente rispetto al proprio livello di affidabilità creditizia.
+
+- **Country**: Paese di residenza del cliente (Germania, Francia, Spagna). Può implicare differenti normative e politiche bancarie.
+
+- **Gender**: Genere del cliente (Femmina=1, Maschio=0).
+
+- **Age**: Età del cliente.
+
+- **Tenure**: Durata del rapporto tra il cliente e la banca, misurata in anni.
+
+- **Balance**: Saldo del conto bancario del cliente, espresso in Euro.
+
+- **Products Number**: Numero di prodotti bancari detenuti dal cliente presso la banca.
+
+- **Credit Card**: Indicazione rispetto al possesso di una carta di credito. Un cliente può possedere o meno una carta di credito.(1=possiede, 0=non possiede)
+
+- **Active Member**: Stato di attività del cliente.  Un cliente può essere attivo (1)o inattivo (0).
+
+- **Estimated Salary**: Stipendio stimato del cliente, espresso in Euro.
+
+- **Churn**: Variabile binaria di risposta che indica se il cliente ha abbandonato o meno la banca (1=churn, 0=no churn).
+
+## Analisi descrittiva
+Innanzitutto, è possibile visualizzare una panoramica del dataset e le principali statistiche descrittive per ciascuna variabile
+
+```{r, echo=FALSE, bank}
+bank <- read.csv("C:/Users/Michele Puglia/Desktop/bank.csv", header = TRUE)
+glimpse(bank)
+summary(bank)
+```
+ 
+## Pre-processing
+Questa fase è fondamentale e richiedel'esecuzione di diverse operazioni al fine di preparare e pulire i dati per l'analisi successiva. In particolare, è processo che mira a migliorare la qualità e l'adeguatezza dei dati.
+
+### Conversione di tipo
+Le variabili churn, country, gender, active_member e credit_card vengono convertite in factor per essere considerate come delle variabili categoriali.
+Queste trasformazioni possono rendere più chiara la rappresentazione delle variabili nel modello, migliorando l'interpretazione e ottimizzando le prestazioni 
+
+```{r, echo=FALSE, pre-processing}
+bank <- bank %>%
+  mutate(
+    churn = as.factor(churn),
+    country = as.factor(country),  #(1=francia, 2=germania, 3=spagna)
+    gender = as.factor(gender),
+    active_member = as.factor(active_member),
+    credit_card = as.factor(credit_card)
+  )
+```
+
+### Controllo di eventuali valori mancanti
+
+Avere dei dati completi è fondamentale per riuscire ad eseguire analisi e modellazioni accurate. I valori mancanti potrebbero introdurre delle distorsioni nei dati e quindi influire negativamente sulle prestazioni del modello.
+
+```{r, echo=FALSE, NA}
+anyNA(bank)
+```
+
+
+
+## Data visualization
+A questo punto si considera la rappresentazione grafica di alcune variabili di interesse al fine di esaminare le distribuzione di tali variabili, individuare pattern e identificare eventuali anomalie.
+
+- **churn**: Innanzitutto, considero la variabile di risposta churn. Il  barplot rappresenta la frequenza delle due classi ed indica che la maggior parte dei dati riguardano casi in cui il cliente non abbandona (circa l'80%).
+```{r, echo=FALSE,churn}
+#Churn
+bank %>%
+  count(churn) %>%
+  mutate(proportion = n / sum(n)) %>%
+  rename(churn = churn, proportion = proportion) %>%
+  print()
+
+ggplot(bank, aes(x = churn, fill = churn)) +
+  geom_bar() +
+  labs(title = "Distribuzione di 'churn'",
+       x = "Churn",
+       y = "Conteggio") +
+  scale_fill_manual(values = c("steelblue", "orange"))+
+  theme_classic()
+```
+
+- **gender**: Le osservazioni sono costituite da un 55% di rappresentanza maschile e un 45% femminile. Si può notare una propensione di churn leggermente maggiore per le donne pari al 25% contro il 16% degli uomini.
+
+- **country**: la maggior parte delle informazioni riguarda clienti francesi (circa il 50%), mentre spagnoli e tedeschi rappresentano entrambi una porzione del 25%. Inoltre, i clienti che vivono in Germania sembrano essere i più propensi ad abbandonare l'istituto bancario con una probabilità pari al 32%
+
+```{r, echo=FALSE,gender-country}
+#Gender e country rispetto a churn
+bar_gender_churn<-ggplot(bank, aes(x = gender, fill = churn)) +
+  geom_bar(position = "stack", stat = "count") +  #position=stack permette di creare delle barre impilate
+  labs(title = "Distribuzione Churn per Gender",
+       x = "Gender",
+       y = "Conteggio") +
+  scale_fill_manual(values = c("steelblue", "orange"),
+                    name = "Churn",
+                    labels = c("No Churn", "Churn"))
+
+bar_country_churn<-ggplot(bank, aes(x = country, fill = churn)) +
+  geom_bar(position = "stack", stat = "count") +
+  labs(title = "Distribuzione Churn-Country",
+       x = "Country",
+       y = "Conteggio") +
+  scale_fill_manual(values = c("steelblue", "orange"),
+                    name = "Churn",
+                    labels = c("No Churn", "Churn"))
+
+grid.arrange(bar_gender_churn, bar_country_churn, ncol = 2)
+```
+
+
+- **active_member**: La percentuale di clienti attivi è del 52% contro il 48% degli inattivi.In termini di churn si può notare come il 27% dei clienti inattivi tendano ad abbandonare il proprio istituto bancario contro il 16% di quelli attivi.
+
+- **credit_card**: Il 70% di clienti possiede una carta di credito mentre il 30% ne è sprovvisto. In termini di churn, le probabilità di abbandono sono pari al 20% in entrambi i casi.
+
+```{r, echo=FALSE,card-actvie}
+
+bar_active_churn<-ggplot(bank, aes(x = active_member, fill = churn)) +
+  geom_bar(position = "stack", stat = "count") +
+  labs(title = "Distribuzione Churn-Active_member",
+       x = "Active_member",
+       y = "Conteggio") +
+  scale_fill_manual(values = c("steelblue", "orange"),
+                    name = "Churn",
+                    labels = c("No Churn", "Churn"))
+
+bar_creditcard_churn<-ggplot(bank, aes(x =credit_card, fill = churn)) +
+  geom_bar(position = "stack", stat = "count") +
+  labs(title = "Distribuzione Churn-credit_card",
+       x = "Credit_card",
+       y = "Conteggio") +
+  scale_fill_manual(values = c("steelblue", "orange"),
+                    name = "Churn",
+                    labels = c("No Churn", "Churn"))
+
+grid.arrange(bar_active_churn, bar_creditcard_churn, ncol = 2)
+```
+
+
+- **age**: L'istogramma della variabile age indica una distribuzione asimmetrica a destra con molti valori in corrispondenza di età giovani(tra i 30 e i 45 anni).Infatti,nel relativo boxplot si può notare come la mediana si posizioni in corrispondenza dei 37 anni e quindi più vicina al primo quartile rispetto al terzo. Inoltre, sono presenti dei potenziali outliers in corrispondenza di valori di età superiori ai 60 anni. Tali valori non corrispondono ad errori o anomalie ma riflettono la presenza di valori che si discostano significativamente dalla massa centrale dei dati. Infatti, i clienti con un'età avanzata rappresentano un sottogruppo di modeste dimensioni (359 ossservazioni) rispetto alla maggioranza dei clienti. Considerando la scelta di churn, si può notare che i clienti più anziani (tra i 40 e i 70 anni) riflettono una maggiore propensione all'abbandono rispetto ai clienti più giovani.
+
+```{r, echo=FALSE,age}
+#Age
+hist_age<-ggplot(bank, aes(x = age, fill = churn)) +
+  geom_histogram(binwidth = 1, color = "black", position = "identity", alpha = 0.7) +
+  scale_fill_manual(values = c("steelblue", "orange")) +
+  labs(title = "Distribuzione di Age") +
+  xlab("Age") +
+  ylab("Frequenza")
+
+bp_age<-ggplot(bank, aes(x = "", y = age)) +
+  geom_boxplot(fill="steelblue") +
+  labs(title = "Boxplot di Age",
+       x = "",
+       y = "Age")
+
+grid.arrange(hist_age, bp_age, ncol = 2)
+
+```
+
+- **balance**: Per la variabile balance si può notare la presenza di molti dati in corrispondenza di valore 0 (conti bancari vuoti), questo può essere spiegato dal fatto che tali saldi siano relativi a conti chiusi oppure aperti di recente Inoltre, si evidenzia una propensione all'abbandono per i clienti con saldi maggiori a 85.000 e questo potrebbe essere dovuto a condizioni più favorevoli in altre banche, ad esempio la ricezione di offerte di interessi di risparmio più alti in altri istituti bancari.
+
+```{r, echo=FALSE,balance}
+#Balance
+hist_balance<-ggplot(bank, aes(x = balance, fill = churn)) +
+  geom_histogram(binwidth = 10000, color = "black", position = "identity", alpha = 0.7) +
+  scale_fill_manual(values = c("steelblue", "orange")) +
+  labs(title = "Distribuzione di balance") +
+  xlab("balance") +
+  ylab("Frequenza") +
+  scale_x_continuous(labels = scales::comma_format(scale = 1, suffix = ""))
+
+bp_balance<-ggplot(bank, aes(x = "", y = balance)) +
+  geom_boxplot(fill="steelblue") +
+  labs(title = "Boxplot di balance",
+       x = "",
+       y = "balance")
+
+grid.arrange(hist_balance, bp_balance, ncol = 2)
+```
+
+
+- **credit_score**: la distribuzione dello score mostra una leggera asimmetria a sinistra, la mediana si posizione in corrispondenza del valore 652 mentre la maggior parte delle osservazioni è compresa tra 584 e 718. Sono presenti dei potenziali outliers in corrispondenza di valori molto bassi di score, in particolare al di sotto del valore 400, dovuti alla presenza di pochi clienti con un basso livello di affidabilità creditizia (solo 15 osservazioni). Considerando le sclete di churn, il credit_score non sembrerebbe incidire notevolmente sulla decisione di clienti ma si può notare una propensione all'abbandono molto elevata per i casi di punteggio al di sotto di 400.
+
+```{r, echo=FALSE,score}
+#credit_score
+hist_score<-ggplot(bank, aes(x = credit_score, fill=churn)) + 
+  geom_histogram(binwidth = 50, color = "black", position = "identity", alpha = 0.7) +
+  scale_fill_manual(values = c("steelblue", "orange")) +
+  labs(title = "Distribuzione Credit Score")
+
+bp_score<-ggplot(bank, aes(x = "", y = credit_score)) +
+  geom_boxplot(fill="steelblue") +
+  labs(title = "Boxplot di credit_score",
+       x = "",
+       y = "credit_score")
+
+grid.arrange(hist_score, bp_score, ncol = 2)
+```
+
+Gli scatterplot (o grafici a dispersione) sono una tipologia di grafici utilizzati per visualizzare la relazione tra due variabili quantitativo in modo da visualizzare il grado di correlazione tra di esse. In questo report sono stati considerati due casi:
+  
+- **Age-balance**: ha lo scopo di trovare eventuali relazioni tra l'età dei clienti e i rispettivi saldi. Le linee di densità indicano una concentrazione significativa intorno ai 30-40 anni e ai saldi tra 50.000 e 200.000 ma in generale non è presente una particolare relazione tra le variabili. In base al colore dei punti si distinguono i casi di churn (arancione) dai casi di No churn (blue) e si può notare come la maggiore concentrazione di churn sia in corrispondenza di età superiori ai 40 anni e saldi superiori agli 80.000.
+Nel garfico, sono stati esclusi i valori di balance pari a 0 poichè riferendosi a conti appena aperti o chiusi non sono rilevanti ai fini dell'analisi.
+
+- **age-credit_score**: in questo caso si vuole analizzare l'età rispetto ai credit_score assegnati dalla banca.Anche in queso caso, il grafico non mostra una particolare relazione tra le due variabili. Si può notare una concentrazione significativa di punti per età comprese tra i 30 e 40 anni e score tra 600 e 700. In termini di churn, invence, mentre la variabile di credit_score non sembra indicare una particolare influenza, sono presenti molti casi di abbandono per età superiori ai 40 anni.
+
+```{r, echo=FALSE,scatterplot}
+#age-balance: escludo i casi di conti vuoti pari a 0
+sp1<-ggplot(subset(bank, balance != 0), aes(x = age, y = balance, color= churn)) +
+  geom_point() +
+  labs(title = "Scatterplot Age-balance", x = "Age", y = "balance") +
+  scale_color_manual(values = c("steelblue", "orange"), name = "Churn", labels = c("No Churn", "Churn"))
+sp1_density<-sp1+geom_density2d(color = "white")
+sp1_density
+
+#age-score
+sp2 <- ggplot(bank, aes(x = age, y = credit_score, color = churn)) +
+  geom_point() +
+  labs(title = "Scatterplot age-score", x = "age", y = "score") +
+  scale_color_manual(values = c("steelblue", "orange"), name = "Churn", labels = c("No Churn", "Churn"))
+sp2_density <- sp2 + geom_density2d(color = "white")
+sp2_density
+```
+
+## Analisi della correlazione 
+Misura del grado di relazione lineare tra le variabili presenti nel dataset.
+Dall'analisi risulta che non sono presenti valori particolarmente elevati di correlazione tra le variabili. Il valore più alto, pari a -0.3, è associato alla relazione tra la variabile balance e la variabile products_number. Tale risultato indica una correlazione negativa tra le 2 variabili e suggerisce che i clienti con saldi più alti tendono a detenere meno prodotti bancari.
+
+```{r, echo=FALSE, corr}
+num_data <- bank %>%
+  select_if(is.numeric)
+
+corrplot(cor(num_data), type = "upper", tl.srt = 45, tl.cex = 0.7, method = "number")
+```
+
+
+## Splitting data
+
+I dati vengono separati in train e test set. Il train set verrà utilizzato per addestrare il modello e apprendere le relazioni utili ad effettuare le successive previsioni. Il test set invece è utile per valutare le prestazioni del modello una volta addestrato.
+
+```{r, echo=FALSE, Splitting_data}
+
+set.seed(1)
+idx<-createDataPartition(bank$churn, p=0.7)
+train=bank[idx$Resample1,]
+test=bank[-idx$Resample1,]
+
+```
+Il train set conterrà il 70% dei dati
+```{r, echo=FALSE, train}
+dim(train)
+```
+Il test set conterrà il 30% dei dati
+```{r, echo=FALSE, test}
+dim(test)
+```
+
+## Logit models
+Costruzione del modello GLM. In questo caso la variabile dipendente è binaria e quindi occorre una regressione logistica binaria con cui modellare la probabilità di successo della variabile di risposta. Inizialmente, la funzione di collegamento (link function) scelta è il logit indicato come il logaritmo degli odds e quindi una funzione che permette di trasformare la probabilità di successo in un'equazione lineare (mappa la probabilita 0,1 su una scala continua tra meno infinito e più infinito).
+Il modello risultante presenta diverse informazioni:
+
+- **stima dei coefficienti**: Permette di comprendere come i cambiamenti nelle variabili predittive sono associati a cambiamenti nei log-odds della variabile di risposta.Ad esempio, il coefficiente per age è 7.254e-02, indicando che un aumento di un'unità in age è associato a un incremento di 0.07254 nei log-odds di "churn". Al contrario, essere un "Active member" è associato a una diminuzione di 1.089 nei log-odds della variabile di risposta "churn"
+
+- **significatività**: Per ciascuna variabile è specificato un p-value che permette di indicare la significatività statistica ovvero quanto bene ciascuna variabile predrittice è in grado di prevedere il valore della variabile risposta nel modello. Nel caso di age, ad esempio, si ha un livello di significatività molto elevato mentre per la variabile tenure il livello di significatività è moderato.
+
+- **Null deviance e Residual deviance**: La Null Deviance indica quanto bene la variabile risposta possa essere prevista dal modello nullo (solo intercetta). La residual deviance invece mostra quanto bene la variabile risposta possa essere prevista dal modello con p variabili predittive. Valori di devianza bassi indicano una capacità di previsione migliore. In questo caso, la residual risulta minore della null deviance il che suggerisce che il modello, con le variabili predittive incluse, spiega una parte significativa della variabilità di churn. 
+
+
+```{r, echo=FALSE, logit1}
+bank.fit <- glm(formula = churn ~ .,
+                family = binomial(link = "logit"),
+                data = train
+                )
+
+summary(bank.fit) 
+```
+
+In base ai risultati ottenuti con il primo modello è possibile costruire un modello alternativo che tenga conto esclusivamente delle variabili significative ovvero quelle per cui il p-value risulta minore del livello 0.05. In particolare, sono state selezionate le variabili: country, gender, age, tenure, balance e active_member.
+Dal confronto tra residual e null deviance possiamo affermare che anche questo modello riesce a spiegare una parte significativa della variabilità della variabile churn.
+
+
+```{r, echo=FALSE, logit2}
+bank.fit2<- glm(churn ~ country+gender+age+tenure+balance+active_member,
+                family = binomial(link="logit"),
+                data = train)
+
+summary(bank.fit2)
+```
+
+A questo punto, avendo a disposizione un modello più complesso (bank.fit) ed uno più semplice (bank.fit2), è possibile confrontare la bontà di adattamento di tali modelli utilizzando il test LRT (likelihood ratio test).Questo test confronta la massima verosimiglianza dei modelli e cerca di determinare se l'aggiunta di parametri (modello più complesso)  porta ad un miglioramento significativo nella verosimiglianza rispetto al modello più semplice. La statistica di test segue approssimativamente una distribuzione chi-quadro con un numero di gradi di libertà pari alla differenza nel numero di parametri tra i due modelli. Il test è costituito da un'ipotesi nulla H0: i modelli sono equivalenti e dall'ipotesi alternativa H1: i modelli sono diversi. La decisione scaturisce dall'analisi del p-value associato e in corrispondenza di valori inferiori a 0.05 si dedice di rifiutare H0 e viceversa.
+
+In questo caso si ottiene un p-value pari a 0.2998 perciò non si rifiuta H0 e quindi si può affermare che i due modelli sono equivalenti. Per il principio di parsimonia il modello da preferire è il più semplice che in questo caso corrisponde a bank.fit2.
+
+```{r, echo=FALSE, anova1}
+anova(bank.fit, bank.fit2, test = "LRT")
+```
+
+Si può effettuare un ulteriore confronto tra i due modelli considerando i criteri AIC e BIC criteri: 
+
+- **AIC**: L'Akaike information criterion riguarda il grado di bilanciamento tra complessità e bontà di adattamento. La formula tiene conto della log-verosimiglianza e di un termine di penalizzazione sul numero di parametri (utile ad evitare sovradattamento). Nel confronto, valori di AIC più bassi indicano un modello preferibile.
+
+- **BIC**: Il Bayesian Information Criterion è simile all'AIC ma contiene un termine di penalizzazione maggiore perchè utilizza il logaritmo per riuscire a penalizzare maggiormente i modelli con più parametri. Anche per questo criterio, un valore più basso di BIC indica un modello preferibile.
+
+In questo caso, in accordo con il test LRT,  sia AIC che BIC indicano che il modello bank.fit2 è preferibile
+```{r, echo=FALSE, aic-bic}
+BIC(bank.fit,bank.fit2)  
+AIC(bank.fit,bank.fit2)
+```
+
+
+## Probit e Clog-log models
+
+Come detto inizialmente, la regressione logistica prevede la possibilità di utilizzare delle link function alternative. Dopo aver costruito il modello logit è possibile creare dei modelli con i link probit e clog-log, per poi confrontarli tra loro sulla base alle perfomance ottenute.
+
+- **clog-log**: utilizza la funzione complementare al logaritmo negativo del complemento della variabile casuale. Risulta utile in caso di squilibri nei dati ovvero se una classe è molto più frequente dell'altra.
+Come per il modello logit, dapprima si considerano tutte le variabili per poi creare un secondo modello che includa solo quelle significative e tramite l'anova test si sceglie il migliore.
+
+```{r, echo=FALSE, clog-log}
+bank.fit.clog <- glm(churn ~ .,
+                     family = binomial(link = "cloglog"), 
+                     data = train)
+
+summary(bank.fit.clog)
+
+bank.fit.clog.2<- glm(churn~country+gender+age+tenure+balance+active_member, 
+                      family = binomial(link = "cloglog"), 
+                      data = train)
+```
+
+Il p-value è pari a 0.2565 quindi i modelli sono equivalenti e si sceglie il modello più semplice, bank.fit.clog2
+
+```{r, echo=FALSE, anovatest}
+anova(bank.fit.clog, bank.fit.clog.2, test = "LRT")
+```
+
+- **probit**: utilizza la funzione di distribuzione cumulativa Normale standard che come il logit mappa la probabilità su una scala continua (tra meno infinito e più infinito) ma presenta delle code più leggere e non consente un'interpretazione diretta in termini di odds.
+
+```{r, echo=FALSE, probit}
+bank.fit.probit <- glm(churn ~ ., 
+                       data = train ,
+                       family = binomial(link="probit"))
+
+summary(bank.fit.probit)
+
+bank.fit.probit2 <- glm(churn ~ country+gender+age+balance+active_member, 
+                        data = train ,
+                        family = binomial(link="probit"))
+```
+
+Il p-value è pari a 0.09653 quindi si conclude che i modelli sono equivalenti e sis scegli ancora una volta il più semplice (bank.fit.probit2) in base al principio di parsimonia
+
+```{r, echo=FALSE, testanova}
+anova(bank.fit.probit, bank.fit.probit2, test = "LRT")
+```
+
+Infine, è possibile effettuare un confronto tra i tre modelli migliori con le tre diverse funzioni di collegamento.Riprendendo i criteri AIC e BIC, i risultati a confronto indicano che il modello con le migliori performance è il modello che utlizza la link function logit e che include le sole variabili significative, ovvero bank.fit2. Infatti, AIC e BIC per quel modello risultano i più bassi.
+
+```{r, echo=FALSE, confront}
+matrix_AIC_BIC<-matrix(c(AIC(bank.fit2),AIC(bank.fit.probit2),AIC(bank.fit.clog.2),BIC(bank.fit2),BIC(bank.fit.probit2),BIC(bank.fit.clog.2)),2,3,byrow=TRUE)
+rownames(matrix_AIC_BIC) <- c("AIC", "BIC")
+colnames(matrix_AIC_BIC) <- c("logit","probit","loglog")
+matrix_AIC_BIC
+```
+
+## Modello migliore
+Una volta individuato il modello migliore si può procedere con ulteriori analisi su di esso. In particolare, verranno esaminati i coefficienti, gli effetti marginali e verranno realizzate delle previsioni su dati nuovi rispetto a quelli di train.
+
+### Coefficienti
+Calcolo dei coefficienti e dei rispettivi intervalli di confidenza. I coefficienti positivi indicano un aumento delle probabilità di churn, mentre quelli negativi suggeriscono una diminuzione. Inoltre, la dimensione dei coefficienti indicano quanto forte sia tale effetto.
+In questo caso, i coefficienti positivi per i clienti tedeschi e spagnoli indicano una maggiore probabilità di churn rispetto ai francesi (l'effetto è maggiore per i tedeschi 8.157291e-01), il coefficiente negativo di genderMale indica che gli uomini hanno probabilità minori di effettuare churn rispetto alle donne, i clienti più anziani potrebbero avere una probabilità più elevata di churn rispetto a quelli più giovani, la maggiore durata del rapporto cliente-banca tende a diminuire la probabilità di churn, saldi più elevati indurrebbero ad una maggiore propensione all'abbandono (anche se l'effetto è lieve 2.971927e-06), infine  i membri attivi hanno una probabilità inferiore di churn rispetto a quelli inattivi.
+
+```{r, echo=FALSE, conf}
+#coefficienti e relativi intervalli di confidenza
+ci <- confint(bank.fit2)
+betaHat <- coef(bank.fit2)
+cbind(betaHat,ci)
+```
+
+Se si considerano gli odd ratio si tiene conto della variazione percentuale nei rapporti di odds per un aumento unitario nelle variabili predittorie.
+In questo caso, considerando un aumento unitario di una variabile per volta, ceteris paribus le altre, possiamo concludere che: countryGermany fa aumentare l'odds di churn di un fattore di 2,26 mentre countrySpain di un fattore di 1.04,GenderMale lo fa aumentare di 0.57, age di 1.07, tenure del 0.97, balance di 1 e active_member di 0.33.
+
+```{r, echo=FALSE, OR}
+#coefficients e intervalli di confidenza in termini di odds (OR)
+cbind(exp(betaHat), exp(ci))
+```
+
+
+
+
+### Prediction
+Sulla base del modello addestrato e considerando dei nuovi dati, è possibile eseguire delle previsioni rispetto alla decisione dei clienti di abbandonare l'istituto bancario.
+
+
+Il primo caso considera un uomo e una donna con le stesse identiche caratteristiche e quindi vuole predire la decisione di churn in base alla differenza di genere.
+Il risulato indica che la probabilità di churn per una donna (21,7%) è maggiore rispetto a quella di un uomo (13,7%)
+
+```{r, echo=FALSE, pred1}
+new.customers<-with(bank,
+                    data.frame(gender=(c("Male","Female")),
+                               country=("Germany"),
+                               age=rep(round(mean(age),0)),
+                               tenure=rep(round(mean(tenure),0)),
+                               balance=rep(mean(balance),2),
+                               active_member=(c("1","1"))))
+
+predict(bank.fit2, newdata = new.customers, type = "response")
+```
+
+Il secondo caso analizza l'impatto dell'attività/inattività di un cliente rispetto alla scelta di churn. Si considerano livelli di acitve_member opposti per due uomini di mezz'età che vivono in Spagna, clienti da 5 anni e che  hanno un saldo medio .
+I risultati indicano che la probabilità di churn per un cliente inattivo è pari al 19% mentre per un cliente attivo è pari al 7,3%. Si può concludere che i clienti attivi hanno una propensione minore all'abbandono rispetto agli inattivi.
+
+```{r, echo=FALSE, pred2}
+new.customers2<-with(bank,
+                     data.frame(gender=("Male"),
+                                country=("Spain"),
+                                age=40,
+                                tenure=5,
+                                balance=rep(mean(balance),2),
+                                active_member=(c("0","1"))))
+
+predict(bank.fit2, newdata = new.customers2, type = "response")
+```
+
+Il terzo caso concerne la scelta di churn in base a differenti valori del saldo. Vengono considerati 50 nuovi clienti che vivono in Spagna, con età di 35 anni e da 6 anni clienti attivi.
+I risultati indicano che le previsioni in corrispondenza di valori di balance più elevati anche la percentuale di prediction aumenta. Ad esempio, in corrispondenza di un uomo che detiene un saldo pari a 49337.01 ho una prediction di churn del 4,7% mentre per un saldo di 120264.97 ottengo una prediction di churn del 5,7%
+
+```{r, echo=FALSE, pred3}
+new.customers3 <- with(bank,
+                      data.frame(gender = rep(c("Male", "Female"), 50, replace = TRUE),
+                                 country = rep("Spain", 50),
+                                 age = rep(35, 50),
+                                 tenure = rep(6, 50),
+                                 balance = runif(50, 30000, 150000),
+                                 active_member = rep("1", 50)))
+
+new.customers3$Prediction<-predict(bank.fit2, newdata = new.customers3, type = "response")
+
+#creo un nuovo dataframe includendo gli errori standard nel precedente dataframe new.customers3
+new.customers4 <- cbind(new.customers3, predict(bank.fit2, newdata = new.customers3, type = "link",
+se = TRUE))
+
+#creo un nuovo dataframe sulla base del precedente, in cui calcolo le probabilità predette tramite plogis e calcolo limiti inferiore e superiore degli standard error
+new.customers5 <- within(new.customers4, {
+  PredictedProb <- plogis(fit)
+  LL <- plogis(fit - (1.96 * se.fit))
+  UL <- plogis(fit + (1.96 * se.fit))
+})
+
+#visualizzo un grafico contenente le probabilità predette e gli intervalli di confidenza. Uso geom_ribbon per rappresentare le bande degli intervalli di confidenza
+ggplot(new.customers5, aes(x = balance, y = PredictedProb))+ geom_ribbon(aes(ymin = LL,
+ymax = UL, fill = gender), alpha = 0.2) + geom_line(aes(colour = gender),
+size = 1)
+
+```
+
+
+### Marginal effects
+
+Gli effetti marginali rappresentano il cambiamento stimato nella variabile risposta associato ad un aumento unitario nelle variabili indipendenti, ceteris paribus tutte le altre. In altre parole permettono di calcolare l'effetto di una singola variabile sul valore atteso della variabile dipendente. 
+
+In questo primo caso, è possibile verificare l'effetto delle variabili age e balance sulla variabile risposta chrurn.
+Considerando un aumento unitario di age tra i 40 e i 50 anni possiamo notare che all'aumentare dell'età aumenta anche la previsione che il cliente effettui un churn. Ad esempio, per età pari a 45 anni il valore di predicted è 0.36 (con un intervallo di confidenza tra 0.33 e 0.39) mentre per un aumento unitario a 46 anni il predicted aumenta a 0.38 (con un intervallo di confidenza tra 0.35 e 0.41). Graficamente, è possibile notare la relazione positiva tra età e probabilità prevista di churn e i relativi intervalli di confidenza.
+
+```{r, echo=FALSE, me_age}
+#incremento età da 40 a 50
+pred.1 <- ggpredict(bank.fit2, "age [40:50]")
+plot(pred.1)
+```
+
+Per analizzare gli effetti marginali rispetto alla variabile balance sono stati considerati degli aumenti diversi da age perchè l'aumento unitario di 1 per il saldo avrebbe una significatività limitata. Perciò, rispetto al saldo consideriamo degli aumenti dell'ordine di 5.000.
+Anche in questo caso, è possibile notare che l'aumento del saldo comporta un aumento della probabilità di churn prevista. Si passa da una probabilità del 23% per saldi compresi tra 50.000 e 60.000 ad una probabilità del 25% per saldi pari a 90.000. 
+
+```{r, echo=FALSE, me_balance}
+#incremento di balance
+pred.4 <- ggpredict(bank.fit2, "balance[50000:90000]")
+plot(pred.4)
+
+```
+
+## Model validation
+
+La validazione di un modello (in questo caso GLM) è fondamentale per garantire che il modello sia in grado di generalizzare bene su nuovi dati e che le sue previsioni siano affidabili nella pratica. Utilizzando tecniche di divisione del dataset e valutazioni appropriate, è possibile valutare l'efficacia del GLM e apportare eventuali miglioramenti necessari.
+
+### Accuracy 
+
+L'accuracy rappresenta la percentuale di previsioni corrette rispetto al totale delle previsioni effettuate dal modello. In questo caso, sul train-set è dell'81.46% mentre per il test-set corrisponde all'80%. Il valore della metrica di test indica che il modello ha una buona capacità di generalizzazione su nuovi dati. Inoltre, non essendo presente un'elevata discrepanza tra i due valori di accuracy è possibile dedurre che non sia presente overfitting.
+
+```{r, echo=FALSE, accuracy}
+
+#Accuracy
+prob <- predict(bank.fit2,train,type='response') 
+train_matrix <- table(train$churn, as.numeric(prob>0.5))
+train_accuracy <- sum(diag(train_matrix))/sum(train_matrix) #accuracy su train set
+print(train_accuracy) # 0.814
+
+prob <- predict(bank.fit2, test, type='response')
+test_matrix <- table(test$churn, as.numeric(prob > 0.5))
+test_accuracy <- sum(diag(test_matrix))/sum(test_matrix) #accuracy su test set
+print(test_accuracy) #0.802
+```
+
+### AUC-ROC
+
+La curva AUC-ROC (Area Under the Receiver Operating Characteristic Curve) è una metrica di valutazione delle prestazioni di un modello di classificazione binaria. Essa visualizza la capacità del modello di discriminare tra le classi positive e negative variando la soglia di decisione. In generale, un AUC di 0.7553 è positivo e indica che il modello ha una buona capacità di distinguere tra casi positivi e negativi.
+
+```{r, echo=FALSE, auc-roc}
+
+#ROC
+M <- predict(bank.fit2, test, type="response")
+MA<- prediction(M, test$churn)
+perf <- performance(MA, "tpr", "fpr")
+plot(perf, colorize = TRUE)
+axis(1, at = seq(0,1,0.1), tck = 1, lty = 2, col = "grey", labels = NA)
+axis(2, at = seq(0,1,0.1), tck = 1, lty = 2, col = "grey", labels = NA)
+abline(a=0, b= 1)
+
+auc(test$churn,M) #0.7553. Deve essere più vicino a 1 che a 0.5
+```
+
+
+### Precision, Recall, F1-score
+
+Poichè l'accuracy non è la metrica migliore in caso di classi sbilanciate, è doveroso considerare ulteriori metriche. La precision misura la precisione del modello nelle previsioni positive. Un valore più alto di precision indica che il modello fa pochi falsi positivi. La recall misura la capacità del modello di identificare tutte le istanze positive. Un valore più alto di recall indica che il modello fa pochi falsi negativi.F1-score è una media armonica tra precision e recall. È utile quando si desidera una misura bilanciata tra queste due metriche.Nel set di addestramento, il modello mostra una precision discreta (62.12%), ma una bassa recall (23.00%), indicando che il modello ha difficoltà nell'identificare correttamente le istanze positive. L'F1-score di 0.34 suggerisce un compromesso tra precision e recall. Sul set di test, la precision è leggermente migliorata (54.50%), ma la recall rimane bassa (18.82%). L'F1-score di 0.28 conferma il compromesso tra precision e recall anche in questo caso.
+
+```{r, echo=FALSE, metriche}
+
+#Altre metriche: Precision, Recall ed F1-score
+
+#Train:
+train_precision <- train_matrix[2,2] / sum(train_matrix[,2]) # Precision
+train_recall <- train_matrix[2,2] / sum(train_matrix[2,])    # Recall
+train_f1 <- 2 * (train_precision * train_recall) / (train_precision + train_recall)  # F1-score
+
+cat("Precision sul set di addestramento:", train_precision, "\n")
+cat("Recall sul set di addestramento:", train_recall, "\n")
+cat("F1-score sul set di addestramento:", train_f1, "\n")
+
+#Test:
+test_precision <- test_matrix[2,2] / sum(test_matrix[,2])    # Precision
+test_recall <- test_matrix[2,2] / sum(test_matrix[2,])       # Recall
+test_f1 <- 2 * (test_precision * test_recall) / (test_precision + test_recall)  # F1-score
+
+cat("Precision sul set di test:", test_precision, "\n")
+cat("Recall sul set di test:", test_recall, "\n")
+cat("F1-score sul set di test:", test_f1, "\n")
+
+```
+
+### Confusion matrix
+
+La matrice di confusione mostra il numero di predizioni corrette e errate fatte dal modello per entrambe le classi.In generale, queste statistiche indicano che il modello ha una precisione e una specificità relativamente alte, ma una sensibilità bassa. Questo suggerisce che il modello ha una buona capacità di identificare le istanze negative, ma può avere difficoltà nell'identificare correttamente le istanze positive
+
+```{r, echo=FALSE, conf.matrix}
+
+#Confusion matrix
+pred2 <- predict(bank.fit2,test,type="response")
+cutoff_churn <- ifelse(pred2>=0.50, 1,0)
+cm <- confusionMatrix(as.factor(test$churn),as.factor(cutoff_churn),positive ='1')
+cm
+
+
+prob <- predict(bank.fit2, test, type='response')
+conf_matrix <- table(test$churn, as.numeric(prob > 0.5))
+conf_matrix_percent <- round(prop.table(conf_matrix, margin = 1) * 100, 1)
+print(conf_matrix_percent)
+
+
+
+```
+
+## Conclusion
+L'obiettivo principale di questa analisi è sfruttare le conoscenze acquisite riguardo ai Modelli Lineari Generalizzati (GLM) per sviluppare un modello affidabile in grado di offrire prestazioni elevate nella previsione dei comportamenti dei clienti bancari, specialmente in relazione alla decisione di churn. La scelta del dataset  è stata motivata dalla rilevanza pratica e dall'interesse concreto inerente a questo contesto. Inoltre, la selezione della regressione logistica come modello è stata dettata dalla natura binaria della variabile di risposta, il churn.
+Il processo analitico è iniziato con un'approfondita analisi descrittiva e grafica dei dati, finalizzata a ottenere informazioni utili per i modelli. Successivamente, durante la fase di modellazione, sono stati esplorati diverse alternative, considerando la significatività delle variabili e valutando diverse opzioni di funzioni di collegamento (link function). Il modello ottimale, identificato come il più performante, è stato selezionato per analisi più approfondite (effetti marginali e previsioni).
+Le conclusioni derivanti dall'analisi del modello sono state approfondite per comprendere come si adatta ai dati e per estrarre informazioni rilevanti per comprendere i comportamenti dei clienti. 
+In particolare, il modello indica diversi aspetti interessanti, tra cui: il modo in cui la nazione di riferimento possa influenzare i clienti in base alle differenti normative regole vigenti, infatti per i diversi paesi considerati sono stati ottenuti dei risultati diversi. Inoltre, sembrerebbe che da un punto di vista prettamente statistico le donne siano più inclini ad effettuare dei churn. Un ulteriore risultato significativo è legato al saldo dei clienti perchè i clienti con maggiori capitali investiti nell'istituto sembrano essere i pù propensi ad abbandonare forse perchè attratti maggiormente da opportunità di risparmio altrove.
+Infine, sulla base dei risultati ottenuti nella fase di validazione,  è importante sottolineare che a causa della natura sensibile dei dati bancari l'accesso a un numero maggiore di informazioni potrebbe migliorare la generalizzabilità delle previsioni, consentendo una comprensione più approfondita e una maggiore precisione nel modellare il churn dei clienti.
